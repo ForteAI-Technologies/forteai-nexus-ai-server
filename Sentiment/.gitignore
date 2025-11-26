@@ -1,0 +1,31 @@
+# Python virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Vector store data
+vector_store/
+
+# Output files
+outputs/
+
+# Backup scripts (optional - uncomment if you want to ignore)
+# backup_py_scripts/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

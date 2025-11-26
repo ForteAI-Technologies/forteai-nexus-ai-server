@@ -1,0 +1,55 @@
+name: AI Server Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install rsync
+        run: sudo apt-get update && sudo apt-get install -y rsync
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          cat > ~/.ssh/cicd_key << 'EOF'
+          -----BEGIN OPENSSH PRIVATE KEY-----
+          b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+          QyNTUxOQAAACDT4MGu3x3l3HUTX7mYBFUQI32OR8VFw65zGj68QlCWoQAAAJjUTC5u1Ewu
+          bgAAAAtzc2gtZWQyNTUxOQAAACDT4MGu3x3l3HUTX7mYBFUQI32OR8VFw65zGj68QlCWoQ
+          AAAED59OCsItR17D6d8vMxr+BtJ7u/W7/SmRKu3uh1ZiY2a9Pgwa7fHeXcdRNfuZgEVRAj
+          fY5HxUXDrnMaPrxCUJahAAAAD2NpY2QtZGVwbG95bWVudAECAwQFBg==
+          -----END OPENSSH PRIVATE KEY-----
+          EOF
+          chmod 600 ~/.ssh/cicd_key
+          ssh-keyscan 13.204.190.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy files
+        run: |
+          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@13.204.190.46 "mkdir -p /tmp/ai-deploy && rm -rf /tmp/ai-deploy/*"
+          rsync -avz -e 'ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no' --exclude='.git' --exclude='__pycache__' ./ ec2-user@13.204.190.46:/tmp/ai-deploy/
+          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@13.204.190.46 "ssh prod-aiserver 'mkdir -p /home/ec2-user/forteai-nexus-ai-server && rm -rf /home/ec2-user/forteai-nexus-ai-server/*' && rsync -avz /tmp/ai-deploy/ prod-aiserver:/home/ec2-user/forteai-nexus-ai-server/"
+
+      - name: Setup env
+        run: |
+          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@13.204.190.46 "cat > /tmp/ai.env << 'ENVEOF'
+          DB_HOST=forte-ai-db.cpowuk2ao66s.ap-south-1.rds.amazonaws.com
+          DB_USER=admin
+          DB_PASSWORD=8Q1ste85Mhf3
+          DB_NAME=forteai_employees
+          FLASK_HOST=10.0.135.215
+          FLASK_PORT=5000
+          ENVEOF
+          scp /tmp/ai.env prod-aiserver:/home/ec2-user/forteai-nexus-ai-server/Sentiment/.env"
+
+      - name: Install and start
+        run: |
+          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@13.204.190.46 "ssh prod-aiserver 'cd /home/ec2-user/forteai-nexus-ai-server/Sentiment && if ! command -v pip3; then sudo yum install -y python3-pip; fi && if ! command -v pm2; then curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash - && sudo yum install -y nodejs && sudo npm install -g pm2; fi && sudo pip3 install mysql-connector-python python-dotenv flask flask-cors ollama chromadb && sudo pip3 install --no-deps langchain==0.1.20 langchain-community==0.0.38 langchain-ollama && sudo pip3 install langchain-core==0.1.52 pydantic tenacity SQLAlchemy aiohttp dataclasses-json langchain-text-splitters numpy==1.26.4 async-timeout==4.0.3 && pm2 stop nexus-ai || true && pm2 delete nexus-ai || true && pm2 start main.py --name nexus-ai --interpreter python3 && pm2 save && sleep 8 && curl -f http://localhost:5000/health'"

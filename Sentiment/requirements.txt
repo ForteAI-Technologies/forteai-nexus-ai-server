@@ -1,0 +1,10 @@
+# Updated - Nov 24, 2024
+python-dotenv==1.0.0
+mysql-connector-python==8.1.0
+langchain==0.1.20
+langchain-ollama>=0.0.1
+ollama>=0.1.0
+flask==2.3.3
+flask-cors==4.0.0
+langchain-community==0.0.38
+chromadb>=0.4.0
