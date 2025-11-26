@@ -1,4 +1,4 @@
-name: AI Server Deploy
+name: AI Server Production Deployment
 
 on:
   push:
@@ -9,17 +9,22 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-
-      - name: Install rsync
-        run: sudo apt-get update && sudo apt-get install -y rsync
-
-      - name: Setup SSH
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y rsync sshpass
+      
+      - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          
+          # Create SSH key from secret
           cat > ~/.ssh/cicd_key << 'EOF'
           -----BEGIN OPENSSH PRIVATE KEY-----
           b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
@@ -29,18 +34,73 @@ jobs:
           fY5HxUXDrnMaPrxCUJahAAAAD2NpY2QtZGVwbG95bWVudAECAwQFBg==
           -----END OPENSSH PRIVATE KEY-----
           EOF
+          
           chmod 600 ~/.ssh/cicd_key
-          ssh-keyscan 13.204.190.46 >> ~/.ssh/known_hosts 2>/dev/null
-
-      - name: Deploy files
+          
+          # Add known hosts
+          ssh-keyscan -H 13.204.190.46 >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan -H 10.0.135.215 >> ~/.ssh/known_hosts 2>/dev/null
+      
+      - name: Deploy code to AI server
         run: |
-          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@13.204.190.46 "mkdir -p /tmp/ai-deploy && rm -rf /tmp/ai-deploy/*"
-          rsync -avz -e 'ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no' --exclude='.git' --exclude='__pycache__' ./ ec2-user@13.204.190.46:/tmp/ai-deploy/
-          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@13.204.190.46 "ssh prod-aiserver 'mkdir -p /home/ec2-user/forteai-nexus-ai-server && rm -rf /home/ec2-user/forteai-nexus-ai-server/*' && rsync -avz /tmp/ai-deploy/ prod-aiserver:/home/ec2-user/forteai-nexus-ai-server/"
-
-      - name: Setup env
+          echo "=========================================="
+          echo " Deploying to AI Server"
+          echo "=========================================="
+          
+          # Prepare temp directory on bastion
+          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@13.204.190.46 "
+            mkdir -p /tmp/ai-server-deploy
+            rm -rf /tmp/ai-server-deploy/*
+          "
+          
+          # Copy code to bastion (exclude .git, cache, etc)
+          echo " Copying code to bastion server..."
+          rsync -avz --progress \
+            -e 'ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no' \
+            --exclude='.git' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='*.pyo' \
+            --exclude='.env' \
+            ./ ec2-user@13.204.190.46:/tmp/ai-server-deploy/
+          
+          # Deploy from bastion to AI server
+          echo " Deploying to AI server..."
+          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@13.204.190.46 "
+            # Prepare AI server directory
+            ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@10.0.135.215 '
+              # Create backup of current code
+              if [ -d /home/ec2-user/forteai-nexus-ai-server ]; then
+                echo \" Backing up current code...\"
+                sudo rm -rf /home/ec2-user/forteai-nexus-ai-server.backup
+                sudo cp -r /home/ec2-user/forteai-nexus-ai-server /home/ec2-user/forteai-nexus-ai-server.backup
+              fi
+              
+              # Prepare fresh directory
+              sudo mkdir -p /home/ec2-user/forteai-nexus-ai-server
+              sudo chown -R ec2-user:ec2-user /home/ec2-user/forteai-nexus-ai-server
+              sudo rm -rf /home/ec2-user/forteai-nexus-ai-server/*
+            '
+            
+            # Copy new code to AI server
+            echo \" Transferring code...\"
+            rsync -avz --progress \
+              -e 'ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no' \
+              /tmp/ai-server-deploy/ \
+              ec2-user@10.0.135.215:/home/ec2-user/forteai-nexus-ai-server/
+          "
+          
+          echo " Code deployment complete"
+      
+      - name: Setup environment and dependencies
         run: |
-          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@13.204.190.46 "cat > /tmp/ai.env << 'ENVEOF'
+          echo "=========================================="
+          echo "⚙️ Setting up Environment"
+          echo "=========================================="
+          
+          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@13.204.190.46 "
+            # Create .env file on bastion
+            cat > /tmp/ai-server.env << 'ENVEOF'
           DB_HOST=forte-ai-db.cpowuk2ao66s.ap-south-1.rds.amazonaws.com
           DB_USER=admin
           DB_PASSWORD=8Q1ste85Mhf3
@@ -48,8 +108,145 @@ jobs:
           FLASK_HOST=10.0.135.215
           FLASK_PORT=5000
           ENVEOF
-          scp /tmp/ai.env prod-aiserver:/home/ec2-user/forteai-nexus-ai-server/Sentiment/.env"
-
-      - name: Install and start
+            
+            # Copy .env to AI server
+            echo \" Deploying environment configuration...\"
+            scp -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no \
+              /tmp/ai-server.env \
+              ec2-user@10.0.135.215:/home/ec2-user/forteai-nexus-ai-server/Sentiment/.env
+            
+            # Setup Python environment on AI server
+            echo \" Installing Python dependencies...\"
+            ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@10.0.135.215 '
+              cd /home/ec2-user/forteai-nexus-ai-server/Sentiment
+              
+              # Clean Python cache (prevent old import issues)
+              echo \" Cleaning Python cache...\"
+              sudo find /home/ec2-user/forteai-nexus-ai-server -type d -name \"__pycache__\" -exec rm -rf {} + 2>/dev/null || true
+              sudo find /home/ec2-user/forteai-nexus-ai-server -name \"*.pyc\" -delete 2>/dev/null || true
+              sudo find /home/ec2-user/forteai-nexus-ai-server -name \"*.pyo\" -delete 2>/dev/null || true
+              
+              # Install packages as root (PM2 needs system packages)
+              echo \" Installing required packages...\"
+              
+              # Core packages
+              sudo pip3 install --break-system-packages mysql-connector-python python-dotenv flask flask-cors
+              
+              # AI/ML packages  
+              sudo pip3 install --break-system-packages ollama chromadb
+              
+              # Langchain packages (CRITICAL: langchain-community replaces langchain-ollama)
+              sudo pip3 install --break-system-packages --no-deps langchain==0.1.20 langchain-community==0.0.38
+              
+              # Langchain dependencies
+              sudo pip3 install --break-system-packages langchain-core==0.1.52 pydantic tenacity SQLAlchemy aiohttp dataclasses-json langchain-text-splitters
+              
+              # Numpy with specific version for compatibility
+              sudo pip3 install --break-system-packages numpy==1.26.4 async-timeout==4.0.3
+              
+              echo \" All packages installed successfully\"
+              
+              # Verify critical import
+              echo \" Verifying langchain_community installation...\"
+              python3 -c "from langchain_community.chat_models import ChatOllama; print(\"✅ langchain_community import successful\")" || echo \"❌ Import failed!\"
+            '
+          "
+          
+          echo " Environment setup complete"
+      
+      - name: Restart PM2 service
         run: |
-          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@13.204.190.46 "ssh prod-aiserver 'cd /home/ec2-user/forteai-nexus-ai-server/Sentiment && if ! command -v pip3; then sudo yum install -y python3-pip; fi && if ! command -v pm2; then curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash - && sudo yum install -y nodejs && sudo npm install -g pm2; fi && sudo pip3 install mysql-connector-python python-dotenv flask flask-cors ollama chromadb && sudo pip3 install --no-deps langchain==0.1.20 langchain-community==0.0.38 langchain-ollama && sudo pip3 install langchain-core==0.1.52 pydantic tenacity SQLAlchemy aiohttp dataclasses-json langchain-text-splitters numpy==1.26.4 async-timeout==4.0.3 && pm2 stop nexus-ai || true && pm2 delete nexus-ai || true && pm2 start main.py --name nexus-ai --interpreter python3 && pm2 save && sleep 8 && curl -f http://localhost:5000/health'"
+          echo "=========================================="
+          echo " Restarting AI Server"
+          echo "=========================================="
+          
+          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@13.204.190.46 "
+            ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@10.0.135.215 '
+              cd /home/ec2-user/forteai-nexus-ai-server/Sentiment
+              
+              # Check if PM2 process exists
+              if pm2 list | grep -q \"nexus-ai\"; then
+                echo \" Restarting existing PM2 process...\"
+                pm2 stop nexus-ai
+                pm2 delete nexus-ai
+              fi
+              
+              # Start fresh PM2 process
+              echo \" Starting AI server...\"
+              pm2 start main.py --name nexus-ai --interpreter python3
+              
+              # Save PM2 configuration
+              pm2 save
+              
+              # Wait for startup
+              sleep 10
+              
+              echo \" PM2 Status:\"
+              pm2 list
+            '
+          "
+          
+          echo " PM2 restart complete"
+      
+      - name: Health check and validation
+        run: |
+          echo "=========================================="
+          echo " Running Health Checks"
+          echo "=========================================="
+          
+          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@13.204.190.46 "
+            ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@10.0.135.215 '
+              cd /home/ec2-user/forteai-nexus-ai-server/Sentiment
+              
+              echo \" Waiting for server to be ready...\"
+              sleep 5
+              
+              # Check PM2 status
+              echo \"\"
+              echo \" PM2 Process Status:\"
+              pm2 list | grep nexus-ai || echo \" Process not found in PM2 list\"
+              
+              # Test health endpoint
+              echo \"\"
+              echo \" Testing /health endpoint...\"
+              HEALTH_RESPONSE=\$(curl -s http://localhost:5000/health)
+              
+              if echo \"\$HEALTH_RESPONSE\" | grep -q \"healthy\"; then
+                echo \" Health check PASSED\"
+                echo \"Response: \$HEALTH_RESPONSE\"
+              else
+                echo \" Health check FAILED\"
+                echo \"Response: \$HEALTH_RESPONSE\"
+                echo \"\"
+                echo \" Recent logs:\"
+                pm2 logs nexus-ai --lines 30 --nostream
+                exit 1
+              fi
+              
+              # Test database endpoint
+              echo \"\"
+              echo \" Testing /debug/database endpoint...\"
+              DB_RESPONSE=\$(curl -s http://localhost:5000/debug/database)
+              
+              if echo \"\$DB_RESPONSE\" | grep -q \"success\"; then
+                echo \"Database connection PASSED\"
+              else
+                echo \" Database connection issue\"
+                echo \"Response: \$DB_RESPONSE\"
+              fi
+              
+              # Show recent logs
+              echo \"\"
+              echo \" Recent Application Logs:\"
+              pm2 logs nexus-ai --lines 20 --nostream
+            '
+          "
+          
+          echo ""
+          echo "=========================================="
+          echo "DEPLOYMENT SUCCESSFUL!"
+          echo "=========================================="
+          echo " AI Server: http://10.0.135.215:5000"
+          echo " Health: http://10.0.135.215:5000/health"
+          echo " Database: http://10.0.135.215:5000/debug/database"
+          echo "=========================================="
