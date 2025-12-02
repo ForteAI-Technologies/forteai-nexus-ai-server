@@ -556,9 +556,9 @@ def get_company_employee_data(company_id):
                 fq.master_question_id,
                 mq.question_number,
                 fq.question_text
-            FROM Responses_Sentiment rs
-            JOIN FormQuestions_Sentiment fq ON rs.form_question_id = fq.form_question_id
-            JOIN MasterQuestions_Sentiment mq ON fq.master_question_id = mq.master_question_id
+            FROM responses_sentiment rs
+            JOIN formquestions_sentiment fq ON rs.form_question_id = fq.form_question_id
+            JOIN masterquestions_sentiment mq ON fq.master_question_id = mq.master_question_id
             WHERE rs.employeesID = %s
             ORDER BY mq.question_number
             """
