@@ -1,0 +1,28 @@
+# Environment
+.env
+.env.*
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+venv/
+venv*/
+*.egg-info/
+
+# Logs
+*.log
+logs/
+
+# AI/ML
+*.pkl
+*.h5
+*.pt
+models/
+checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
