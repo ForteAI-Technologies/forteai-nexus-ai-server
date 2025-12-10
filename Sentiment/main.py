@@ -7,7 +7,7 @@ except Exception:
     pass
 
 import mysql.connector
-from langchain_community.chat_models import ChatOllama
+from langchain_ollama import ChatOllama
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 import itertools
@@ -169,10 +169,10 @@ def get_fortai_db_connection():
 STRUCTURED_ANALYSIS_TEMPLATE = """
 CRITICAL INSTRUCTIONS - READ CAREFULLY:
 1. You MUST return ONLY a valid JSON object - nothing else
-2. NO text before the opening brace {{
-3. NO text after the closing brace }}
+2. NO text before the opening JSON
+3. NO text after the closing JSON
 4. NO markdown formatting, NO code blocks, NO explanations
-5. Start your response with {{ and end with }}
+5. Return only the JSON object
 
 Analyze this employee's survey and create a JSON response with sentiment analysis.
 
@@ -180,25 +180,30 @@ EMPLOYEE SURVEY:
 {survey_responses}
 
 RETURN ONLY THIS JSON STRUCTURE (no other text):
-{{"positive_sentiment":50,"neutral_sentiment":30,"negative_sentiment":20,"summary_opinion":"Brief analysis of employee sentiment based on survey responses","key_positive_1":"First positive aspect from[...]
+    YOU MUST INCLUDE ALL THESE FIELDS:
+positive_sentiment, neutral_sentiment, negative_sentiment, summary_opinion, key_positive_1, key_positive_2, key_positive_3, attrition_factor_1, attrition_problem_1, retention_strategy_1, attrition_factor_2, attrition_problem_2, retention_strategy_2, attrition_factor_3, attrition_problem_3, retention_strategy_3
+
 """
 
 # ================= COMPANY ANALYSIS TEMPLATE =================
 COMPANY_ANALYSIS_TEMPLATE = """
 CRITICAL INSTRUCTIONS - READ CAREFULLY:
 1. You MUST return ONLY a valid JSON object - nothing else
-2. NO text before the opening brace {{
-3. NO text after the closing brace }}
+2. NO text before the opening JSON
+3. NO text after the closing JSON  
 4. NO markdown formatting, NO code blocks, NO explanations
-5. Start your response with {{ and end with }}
-
+5. Return only the JSON object
 Analyze ALL employee surveys for this company and create a JSON response with company-wide sentiment analysis.
 
 COMPANY EMPLOYEE SURVEY DATA:
 {all_employee_data}
 
 RETURN ONLY THIS JSON STRUCTURE (no other text):
-{{"positive_sentiment":50,"neutral_sentiment":30,"negative_sentiment":20,"summary_opinion":"Company-wide sentiment analysis based on all employee surveys","key_positive_1":"First positive aspect acros[...]
+    YOU MUST INCLUDE ALL THESE FIELDS:
+positive_sentiment, neutral_sentiment, negative_sentiment, summary_opinion, key_positive_1, key_positive_2, key_positive_3, attrition_factor_1, attrition_problem_1, retention_strategy_1, attrition_factor_2, attrition_problem_2, retention_strategy_2, attrition_factor_3, attrition_problem_3, retention_strategy_3
+
+
+
 """
 
 def save_analysis_to_fortai_db(employee_id, company, analysis_data):
