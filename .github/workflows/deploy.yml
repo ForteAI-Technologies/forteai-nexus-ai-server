@@ -1,56 +1,71 @@
 name: AI Server Deploy
+
 on:
   push:
     branches:
       - main
   workflow_dispatch:
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    
     steps:
+      # Step 1: Get code from GitHub repository
       - name: Checkout code
         uses: actions/checkout@v3
       
+      # Step 2: Install required tools for deployment
       - name: Install rsync
         run: sudo apt-get update && sudo apt-get install -y rsync
       
+      # Step 3: Setup SSH key to connect to bastion server
       - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
-          cat > ~/.ssh/cicd_key << 'EOF'
-          -----BEGIN OPENSSH PRIVATE KEY-----
-          b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
-          QyNTUxOQAAACDT4MGu3x3l3HUTX7mYBFUQI32OR8VFw65zGj68QlCWoQAAAJjUTC5u1Ewu
-          bgAAAAtzc2gtZWQyNTUxOQAAACDT4MGu3x3l3HUTX7mYBFUQI32OR8VFw65zGj68QlCWoQ
-          AAAED59OCsItR17D6d8vMxr+BtJ7u/W7/SmRKu3uh1ZiY2a9Pgwa7fHeXcdRNfuZgEVRAj
-          fY5HxUXDrnMaPrxCUJahAAAAD2NpY2QtZGVwbG95bWVudAECAwQFBg==
-          -----END OPENSSH PRIVATE KEY-----
-          EOF
+          echo "${{ secrets.BASTION_SSH_KEY }}" > ~/.ssh/cicd_key
           chmod 600 ~/.ssh/cicd_key
-          ssh-keyscan 13.204.190.46 >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan ${{ vars.BASTION_IP }} >> ~/.ssh/known_hosts 2>/dev/null
       
+      # Step 4: Deploy files from GitHub to bastion and then to AI server
       - name: Deploy files
         run: |
-          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@13.204.190.46 "mkdir -p /tmp/ai-deploy && rm -rf /tmp/ai-deploy/*"
-          rsync -avz -e 'ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no' --exclude='.git' --exclude='__pycache__' ./ ec2-user@13.204.190.46:/tmp/ai-deploy/
-          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@13.204.190.46 "ssh prod-aiserver 'mkdir -p /home/ec2-user/forteai-nexus-ai-server && rm -rf /home/ec2-user/forteai-nexus-ai-server/*' && rsync -avz /tmp/ai-deploy/ prod-aiserver:/home/ec2-user/forteai-nexus-ai-server/"
+          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@${{ vars.BASTION_IP }} "mkdir -p /tmp/ai-deploy && rm -rf /tmp/ai-deploy/*"
+          rsync -avz -e 'ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no' --exclude='.git' --exclude='__pycache__' ./ ec2-user@${{ vars.BASTION_IP }}:/tmp/ai-deploy/
+          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@${{ vars.BASTION_IP }} "ssh prod-aiserver 'mkdir -p /home/ec2-user/forteai-nexus-ai-server && rm -rf /home/ec2-user/forteai-nexus-ai-server/*' && rsync -avz /tmp/ai-deploy/ prod-aiserver:/home/ec2-user/forteai-nexus-ai-server/"
       
+      # Step 5: Create environment file with database and Flask configuration
       - name: Setup env
         run: |
-          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@13.204.190.46 "cat > /tmp/ai.env << 'ENVEOF'
-          DB_HOST=forte-ai-db.cpowuk2ao66s.ap-south-1.rds.amazonaws.com
-          DB_USER=admin
-          DB_PASSWORD=8Q1ste85Mhf3
-          DB_NAME=forteai_employees
-          FLASK_HOST=10.0.135.215
-          FLASK_PORT=5000
+          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@${{ vars.BASTION_IP }} "cat > /tmp/ai.env << 'ENVEOF'
+          DB_HOST=${{ secrets.DB_HOST }}
+          DB_USER=${{ secrets.DB_USER }}
+          DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+          DB_NAME=${{ vars.DB_NAME }}
+          FLASK_HOST=${{ vars.FLASK_HOST }}
+          FLASK_PORT=${{ vars.FLASK_PORT }}
           ENVEOF
           scp /tmp/ai.env prod-aiserver:/home/ec2-user/forteai-nexus-ai-server/Sentiment/.env"
       
+      # Step 6: Setup Python virtual environment and install required packages
       - name: Setup Python Environment & Install Packages
         run: |
-          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@13.204.190.46 "ssh prod-aiserver 'cd /home/ec2-user/forteai-nexus-ai-server/Sentiment && python3 -m venv venv && source venv/bin/activate && pip install --upgrade pip && (pip install -r requirements.txt || pip install flask==3.0.3 langchain==0.2.11 langchain-core==0.2.36 langchain-community==0.2.10 langchain-ollama==0.1.3 langsmith==0.1.75 pydantic==2.7.1 pydantic-core==2.18.2 requests==2.31.0 python-dotenv==1.0.1 flask-cors==4.0.0 mysql-connector-python==8.1.0 ollama chromadb)'"
+          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@${{ vars.BASTION_IP }} "ssh prod-aiserver 'cd /home/ec2-user/forteai-nexus-ai-server/Sentiment && python3 -m venv venv && source venv/bin/activate && pip install --upgrade pip && (pip install -r requirements.txt || pip install flask==3.0.3 langchain==0.2.11 langchain-core==0.2.36 langchain-community==0.2.10 langchain-ollama==0.1.3 langsmith==0.1.75 pydantic==2.7.1 pydantic-core==2.18.2 requests==2.31.0 python-dotenv==1.0.1 flask-cors==4.0.0 mysql-connector-python==8.1.0 ollama chromadb)'"
       
+      # Step 7: Restart Flask service with PM2 and verify health
       - name: Restart Service & Verify
         run: |
-          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@13.204.190.46 "ssh prod-aiserver 'cd /home/ec2-user/forteai-nexus-ai-server/Sentiment && if ! command -v pm2; then curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash - && sudo yum install -y nodejs && sudo npm install -g pm2; fi && pm2 stop nexus-ai || true && pm2 delete nexus-ai || true && pm2 start main.py --name nexus-ai --interpreter python3 && pm2 save && sleep 8 && pm2 status && (curl -f http://localhost:5000/health || (echo \"Health check failed\" && pm2 logs nexus-ai --lines 50 && exit 1))'"
+          ssh -i ~/.ssh/cicd_key -o StrictHostKeyChecking=no ec2-user@${{ vars.BASTION_IP }} "ssh prod-aiserver 'cd /home/ec2-user/forteai-nexus-ai-server/Sentiment && if ! command -v pm2; then curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash - && sudo yum install -y nodejs && sudo npm install -g pm2; fi && pm2 stop nexus-ai || true && pm2 delete nexus-ai || true && pm2 start main.py --name nexus-ai --interpreter python3 && pm2 save && sleep 8 && pm2 status && (curl -f http://localhost:${{ vars.FLASK_PORT }}/health || (echo \"Health check failed\" && pm2 logs nexus-ai --lines 50 && exit 1))'"
+      
+      # Step 8: Display deployment summary
+      - name: Deployment Summary
+        if: always()
+        run: |
+          echo "=============================================="
+          echo "AI Server Deployment - Summary"
+          echo "=============================================="
+          echo "Status: ${{ job.status }}"
+          echo "AI Server IP: ${{ vars.AI_SERVER_IP }}"
+          echo "Flask Port: ${{ vars.FLASK_PORT }}"
+          echo "Database: ${{ secrets.DB_HOST }}"
+          echo "=============================================="
